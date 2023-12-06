@@ -464,7 +464,10 @@ class ECMStack:
             ode_rhs[i][0] = heat_equation_rhs[i]
             ode_rhs[i][1] = layer_odes[i].d_soc_dt
             ode_rhs[i][2:] = layer_odes[i].d_rcvoltages_dt
-        return ode_rhs.squeeze()
+        ret = ode_rhs.ravel()
+        if any(np.isnan(ret)):
+            raise ParameterException
+        return ret
 
     def _get_electrical_states(
         self, ode_state: np.ndarray, total_current: float
