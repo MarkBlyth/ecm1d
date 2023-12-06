@@ -103,13 +103,21 @@ class ECMResults:
         self._electrical_states.append(electrical_states)
         self._n_entries = self._n_entries + 1
 
-    def __getitem__(self, i: int) -> TimeStep:
+    def __getitem__(self, i: int | slice) -> TimeStep:
         """
         ecmresults[i] returns a TimeStep object of datapoints at index
         i
         """
-        if i <= self._n_entries:
-            raise ValueError(f"Index {i} exceeds number of entries ({self._n_entries})")
+        if isinstance(i, slice):
+            if i.stop >= self._n_entries:
+                raise ValueError(
+                    f"Index {i} exceeds number of entries ({self._n_entries})"
+                )
+        else:
+            if i >= self._n_entries:
+                raise ValueError(
+                    f"Index {i} exceeds number of entries ({self._n_entries})"
+                )
         return TimeStep(
             self._ts[i],
             self._soc[i],
