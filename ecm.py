@@ -39,6 +39,10 @@ TimeStep = collections.namedtuple(
 )
 
 
+class ParameterException(Exception):
+    pass
+
+
 class ECMResults:
     """
     Nothing but data storage. Maintains arrays of lots of relevant
