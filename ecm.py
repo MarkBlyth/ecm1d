@@ -54,17 +54,17 @@ class ECMResults:
 
     def __init__(self, n_timestamps: int, n_layers: int):
         self._n_entries = 0
-        self._ts = np.array(n_timestamps)
-        self._soc = np.array(n_timestamps)
-        self._current = np.array(n_timestamps)
-        self._terminal_voltage = np.array(n_timestamps)
-        self._heat_generation = np.array(n_timestamps)
-        self._layer_entropy_coeffs = np.array((n_layers, n_timestamps))
-        self._layer_currents = np.array((n_layers, n_timestamps))
-        self._layer_socs = np.array((n_layers, n_timestamps))
-        self._layer_temperatures = np.array((n_layers, n_timestamps))
-        self._layer_heat_generation = np.array((n_layers, n_timestamps))
-        self._layer_ocvs = np.array((n_layers, n_timestamps))
+        self._ts = np.zeros(n_timestamps)
+        self._soc = np.zeros(n_timestamps)
+        self._current = np.zeros(n_timestamps)
+        self._terminal_voltage = np.zeros(n_timestamps)
+        self._heat_generation = np.zeros(n_timestamps)
+        self._layer_entropy_coeffs = np.zeros((n_layers, n_timestamps))
+        self._layer_currents = np.zeros((n_layers, n_timestamps))
+        self._layer_socs = np.zeros((n_layers, n_timestamps))
+        self._layer_temperatures = np.zeros((n_layers, n_timestamps))
+        self._layer_heat_generation = np.zeros((n_layers, n_timestamps))
+        self._layer_ocvs = np.zeros((n_layers, n_timestamps))
         self._electrical_states: list[list[ElectricalState]] = []
 
     def append_state(
@@ -133,18 +133,53 @@ class ECMResults:
             self._electrical_states[i],
         )
 
-    def __getattribute__(self, item):
-        """
-        Only return the first n_entries datapoints when doing (eg.)
-        results.time etc.
-        """
-        item = object.__getattribute__(self, item)
-        try:
-            if item.ndim == 1:
-                return item[: self._n_entries]
-        except AttributeError:
-            return item[: self._n_entries]
-        return item[:, : self._n_entries]
+    @property
+    def ts(self):
+        return self._ts[: self._n_entries]
+
+    @property
+    def soc(self):
+        return self._soc[: self._n_entries]
+
+    @property
+    def current(self):
+        return self._current[: self._n_entries]
+
+    @property
+    def terminal_voltage(self):
+        return self._terminal_voltage[: self._n_entries]
+
+    @property
+    def heat_generation(self):
+        return self._heat_generation[: self._n_entries]
+
+    @property
+    def electrical_states(self):
+        return self._electrical_states[: self._n_entries]
+
+    @property
+    def layer_entropy_coeffs(self):
+        return self._layer_entropy_coeffs[:, : self._n_entries]
+
+    @property
+    def layer_currents(self):
+        return self._layer_currents[:, : self._n_entries]
+
+    @property
+    def layer_socs(self):
+        return self._layer_socs[:, : self._n_entries]
+
+    @property
+    def layer_temperatures(self):
+        return self._layer_temperatures[:, : self._n_entries]
+
+    @property
+    def layer_heat_generation(self):
+        return self._layer_heat_generation[:, : self._n_entries]
+
+    @property
+    def layer_ocvs(self):
+        return self._layer_ocvs[:, : self._n_entries]
 
 
 class BaseLUT(abc.ABC):
