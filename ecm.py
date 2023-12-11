@@ -14,6 +14,16 @@ except ImportError:
     PROGRESSBAR = False
 
 
+"""
+TODOs
+    1. Refactor to have unit ECM part of stack
+    2. Vectorise...
+           > Only one call to LUT per iteration
+           > LUT takes np arrays instead
+    3. Turn LUT into a more general battery def'n class
+           > Include capacity, thermal diffusivity? thickness?
+"""
+
 ElectricalState = collections.namedtuple(
     "ElectricalState",
     ["terminal_voltage", "layer_temperature", "layer_soc", "layer_rc_voltages"],
