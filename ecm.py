@@ -22,6 +22,8 @@ TODOs
            > LUT takes np arrays instead
     3. Turn LUT into a more general battery def'n class
            > Include capacity, thermal diffusivity? thickness?
+    4. Create 'pre-rolled' batteries: combine thermals, LUTs, and stack class to get pre-built model
+    5. Refactor into package with simple init, docs
 """
 
 ElectricalState = collections.namedtuple(
