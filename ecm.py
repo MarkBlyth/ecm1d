@@ -474,9 +474,7 @@ class ECMStack:
         heatgen = np.fromiter(
             (self._ecm.get_heat_gen(s) for s in electrical_states), float
         )
-        total_heatgen = scipy.integrate.trapezoid(
-            heatgen, np.linspace(0, 1, self._nstack)
-        )
+        total_heatgen = heatgen.sum()
         entropies = np.fromiter(
             (self._ecm.parameters.get_entropy(s) for s in electrical_states), float
         )
