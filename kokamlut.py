@@ -1,6 +1,9 @@
+#!/usr/bin/env python3
+
+from __future__ import annotations
+import numpy as np
 import scipy.interpolate
 import pandas as pd
-import numpy as np
 import ecm
 
 
@@ -11,9 +14,33 @@ _OCV_PARS = "./parameters/kokam_pars/OCV-SoC.csv"
 _dVdT_PARS = "./parameters/kokam_pars/dVdT-SoC.csv"
 
 
-class KokamLUT(ecm.BaseLUT):
-    def __init__(self):
-        super().__init__()
+def check_result(func):
+    """
+    Optional decorator to add to Parameters class methods. Checks
+    returns for NaN, and gives a printout of the parameters.
+    """
+    def checked(*args, **kwargs):
+        ret = func(*args, **kwargs)
+        if any(np.isnan(ret.ravel())):
+            print(f"{func.__name__} gave nan with args")
+            for arg, name in zip(args[1:], ["SOC", "Temperature"]):
+                print(name, arg)
+        return ret
+
+    return checked
+
+
+class KokamParameters(ecm.BaseParameters):
+    def __init__(self, nlayers):
+        diffusivity = 0.9048e-6
+        heat_capacity = 880
+        line_density = 11.13
+        thickness = 0.0115
+        capacity_Ah = 5
+
+        super().__init__(
+            nlayers, diffusivity, heat_capacity, line_density, thickness, capacity_Ah
+        )
 
         ocv_df = pd.read_csv(_OCV_PARS)
         entropy_df = pd.read_csv(_dVdT_PARS)
@@ -60,48 +87,35 @@ class KokamLUT(ecm.BaseLUT):
             (unique_x, unique_y),
             values,
             bounds_error=False,
-            method="cubic",
+            method="linear",
         )
 
-    @ecm.check_nan
-    def get_entropy(self, cell_state: ecm.ElectricalState) -> float:
-        return self._entropy_interp(cell_state.layer_soc).squeeze()
+    def get_entropy(self, soc: float | np.ndarray) -> float | np.ndarray:
+        return self._entropy_interp(soc)
 
-    @ecm.check_nan
-    def get_ocv(self, cell_state: ecm.ElectricalState) -> float:
-        return self._ocv_interp(cell_state.layer_soc).squeeze()
+    def get_ocv(self, soc: float | np.ndarray) -> float | np.ndarray:
+        return self._ocv_interp(soc)
 
-    @ecm.check_nan
-    def get_unscaled_r0(self, cell_state: ecm.ElectricalState) -> float:
-        return self._r0_interp(
-            (cell_state.layer_temperature, cell_state.layer_soc)
-        ).squeeze()
+    def get_unscaled_r0(
+        self, soc: float | np.ndarray, temperature: float | np.ndarray
+    ) -> float | np.ndarray:
+        return self._r0_interp((temperature, soc))
 
-    @ecm.check_nan
-    def get_unscaled_ris(self, cell_state: ecm.ElectricalState) -> np.ndarray:
-        r1 = self._r1_interp(
-            (cell_state.layer_temperature, cell_state.layer_soc)
-        ).squeeze()
-        r2 = self._r2_interp(
-            (cell_state.layer_temperature, cell_state.layer_soc)
-        ).squeeze()
-        r3 = self._r3_interp(
-            (cell_state.layer_temperature, cell_state.layer_soc)
-        ).squeeze()
-        return np.r_[r1, r2, r3]
+    def get_unscaled_ris(
+        self, soc: float | np.ndarray, temperature: float | np.ndarray
+    ) -> np.ndarray:
+        r1 = self._r1_interp((temperature, soc))
+        r2 = self._r2_interp((temperature, soc))
+        r3 = self._r3_interp((temperature, soc))
+        return np.vstack((r1, r2, r3))
 
-    @ecm.check_nan
-    def get_unscaled_cis(self, cell_state: ecm.ElectricalState) -> np.ndarray:
-        c1 = self._c1_interp(
-            (cell_state.layer_temperature, cell_state.layer_soc)
-        ).squeeze()
-        c2 = self._c2_interp(
-            (cell_state.layer_temperature, cell_state.layer_soc)
-        ).squeeze()
-        c3 = self._c3_interp(
-            (cell_state.layer_temperature, cell_state.layer_soc)
-        ).squeeze()
-        return np.r_[c1, c2, c3]
+    def get_unscaled_cis(
+        self, soc: float | np.ndarray, temperature: float | np.ndarray
+    ) -> np.ndarray:
+        c1 = self._c1_interp((temperature, soc))
+        c2 = self._c2_interp((temperature, soc))
+        c3 = self._c3_interp((temperature, soc))
+        return np.vstack((c1, c2, c3))
 
     @staticmethod
     def _get_soc_temp_predictors(df, target):

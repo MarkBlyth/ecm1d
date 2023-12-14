@@ -1,264 +1,98 @@
 from __future__ import annotations
-import copy
+from typing import Callable
 import abc
 import numpy as np
-import collections
 import warnings
 import scipy.integrate
-
-try:
-    import progressbar
-
-    PROGRESSBAR = True
-except ImportError:
-    PROGRESSBAR = False
-
-
-"""
-TODOs
-    1. Refactor to have unit ECM part of stack
-    2. Vectorise...
-           > Only one call to LUT per iteration
-           > LUT takes np arrays instead
-    3. Turn LUT into a more general battery def'n class
-           > Include capacity, thermal diffusivity? thickness?
-    4. Create 'pre-rolled' batteries: combine thermals, LUTs, and stack class to get pre-built model
-    5. Refactor into package with simple init, docs
-"""
-
-ElectricalState = collections.namedtuple(
-    "ElectricalState",
-    ["terminal_voltage", "layer_temperature", "layer_soc", "layer_rc_voltages"],
-)
-CellODE = collections.namedtuple(
-    "CellODE", ["d_soc_dt", "d_rcvoltages_dt", "layer_heatgen", "layer_current"]
-)
-TimeStep = collections.namedtuple(
-    "TimeStep",
-    [
-        "time",
-        "soc",
-        "current",
-        "terminal_voltage",
-        "heat_generation",
-        "layer_entropy_coeffs",
-        "layer_currents",
-        "layer_socs",
-        "layer_temperatures",
-        "layer_heat_generation",
-        "layer_ocvs",
-        "electrical_states",
-    ],
-)
 
 
 class ParameterException(Exception):
     pass
 
 
-class ECMResults:
-    """
-    Nothing but data storage. Maintains arrays of lots of relevant
-    variables, and allows them to be accessed in nice ways.
-
-    Addressable as output[i] to get TimeStep(time, soc, ...), or
-    output.time, output.current, ...
-    """
-
-    def __init__(self, n_timestamps: int, n_layers: int):
-        self._n_entries = 0
-        self._ts = np.zeros(n_timestamps)
-        self._soc = np.zeros(n_timestamps)
-        self._current = np.zeros(n_timestamps)
-        self._terminal_voltage = np.zeros(n_timestamps)
-        self._heat_generation = np.zeros(n_timestamps)
-        self._layer_entropy_coeffs = np.zeros((n_layers, n_timestamps))
-        self._layer_currents = np.zeros((n_layers, n_timestamps))
-        self._layer_socs = np.zeros((n_layers, n_timestamps))
-        self._layer_temperatures = np.zeros((n_layers, n_timestamps))
-        self._layer_heat_generation = np.zeros((n_layers, n_timestamps))
-        self._layer_ocvs = np.zeros((n_layers, n_timestamps))
-        self._electrical_states: list[list[ElectricalState]] = []
-
-    def append_state(
-        self,
-        time: float,
-        soc: float,
-        current: float,
-        terminal_voltage: float,
-        heat_generation: float,
-        layer_entropy_coeffs: np.ndarray,
-        layer_currents: np.ndarray,
-        layer_socs: np.ndarray,
-        layer_temperatures: np.ndarray,
-        layer_heat_generation: np.ndarray,
-        layer_ocvs: np.ndarray,
-        electrical_states: list[ElectricalState],
-    ) -> None:
-        """
-        Record new data.
-        """
-        if self._n_entries == self._ts.size:
-            raise ValueError(
-                "Cannot append additional items. Data structure has reached initialised size."
-            )
-        self._ts[self._n_entries] = time
-        self._soc[self._n_entries] = soc
-        self._current[self._n_entries] = current
-        self._terminal_voltage[self._n_entries] = terminal_voltage
-        self._heat_generation[self._n_entries] = heat_generation
-        self._layer_entropy_coeffs[:, self._n_entries] = layer_entropy_coeffs
-        self._layer_currents[:, self._n_entries] = layer_currents
-        self._layer_socs[:, self._n_entries] = layer_socs
-        self._layer_temperatures[:, self._n_entries] = layer_temperatures
-        self._layer_heat_generation[:, self._n_entries] = layer_heat_generation
-        self._layer_ocvs[:, self._n_entries] = layer_ocvs
-        self._electrical_states.append(electrical_states)
-        self._n_entries = self._n_entries + 1
-
-    def __getitem__(self, i: int | slice) -> TimeStep:
-        """
-        ecmresults[i] returns a TimeStep object of datapoints at index
-        i
-        """
-        if isinstance(i, slice):
-            if i.stop >= self._n_entries:
-                raise ValueError(
-                    f"Index {i} exceeds number of entries ({self._n_entries})"
-                )
-        else:
-            if i >= self._n_entries:
-                raise ValueError(
-                    f"Index {i} exceeds number of entries ({self._n_entries})"
-                )
-        return TimeStep(
-            self._ts[i],
-            self._soc[i],
-            self._current[i],
-            self._terminal_voltage[i],
-            self._heat_generation[i],
-            self._layer_entropy_coeffs[:, i],
-            self._layer_currents[i],
-            self._layer_socs[:, i],
-            self._layer_temperatures[:, i],
-            self._layer_heat_generation[:, i],
-            self._layer_ocvs[:, i],
-            self._electrical_states[i],
-        )
-
-    @property
-    def ts(self):
-        return self._ts[: self._n_entries]
-
-    @property
-    def soc(self):
-        return self._soc[: self._n_entries]
-
-    @property
-    def current(self):
-        return self._current[: self._n_entries]
-
-    @property
-    def terminal_voltage(self):
-        return self._terminal_voltage[: self._n_entries]
-
-    @property
-    def heat_generation(self):
-        return self._heat_generation[: self._n_entries]
-
-    @property
-    def electrical_states(self):
-        return self._electrical_states[: self._n_entries]
-
-    @property
-    def layer_entropy_coeffs(self):
-        return self._layer_entropy_coeffs[:, : self._n_entries]
-
-    @property
-    def layer_currents(self):
-        return self._layer_currents[:, : self._n_entries]
-
-    @property
-    def layer_socs(self):
-        return self._layer_socs[:, : self._n_entries]
-
-    @property
-    def layer_temperatures(self):
-        return self._layer_temperatures[:, : self._n_entries]
-
-    @property
-    def layer_heat_generation(self):
-        return self._layer_heat_generation[:, : self._n_entries]
-
-    @property
-    def layer_ocvs(self):
-        return self._layer_ocvs[:, : self._n_entries]
-
-
-class BaseLUT(abc.ABC):
+class BaseParameters(abc.ABC):
     """
     Interface for implementing an ECM-compatible lookup-table
     (regression model!). User is responsible for handling data, and
     implementing interpolation (probably scipy interpolate).
     """
 
-    def __init__(self):
-        self.nlayers = 1
+    def __init__(
+        self,
+        nlayers,
+        diffusivity: float,
+        heat_capacity: float,
+        line_density: float,
+        thickness: float,
+        capacity_Ah: float,
+    ):
+        self.nlayers = nlayers
+        self.diffusivity = diffusivity
+        self.heat_capacity = heat_capacity
+        self.line_density = line_density
+        self.thickness = thickness
+        self.capacity_Ah = capacity_Ah
+        self.layer_capacity_As = capacity_Ah * 3600 / nlayers
 
     @abc.abstractmethod
-    def get_entropy(self, cell_state: ElectricalState) -> float:
+    def get_entropy(self, soc: float | np.ndarray) -> float | np.ndarray:
         pass
 
     @abc.abstractmethod
-    def get_ocv(self, cell_state: ElectricalState) -> float:
+    def get_ocv(self, soc: float | np.ndarray) -> float | np.ndarray:
         pass
 
     @abc.abstractmethod
-    def get_unscaled_r0(self, cell_state: ElectricalState) -> float:
+    def get_unscaled_r0(
+        self,
+        soc: float | np.ndarray,
+        temperature: float | np.ndarray,
+    ) -> float | np.ndarray:
         pass
 
     @abc.abstractmethod
-    def get_unscaled_ris(self, cell_state: ElectricalState) -> np.ndarray:
+    def get_unscaled_ris(
+        self,
+        soc: float | np.ndarray,
+        temperature: float | np.ndarray,
+    ) -> np.ndarray:
+        # one row = one RC pair; one col = one layer
         pass
 
     @abc.abstractmethod
-    def get_unscaled_cis(self, cell_state: ElectricalState) -> np.ndarray:
+    def get_unscaled_cis(
+        self,
+        soc: float | np.ndarray,
+        temperature: float | np.ndarray,
+    ) -> np.ndarray:
+        # one row = one RC pair; one col = one layer
         pass
 
-    def get_r0(self, cell_state: ElectricalState) -> float:
-        return self.get_unscaled_r0(cell_state) * self.nlayers
+    def get_r0(
+        self,
+        soc: float | np.ndarray,
+        temperature: float | np.ndarray,
+    ) -> float | np.ndarray:
+        return self.get_unscaled_r0(soc, temperature) * self.nlayers
 
-    def get_ris(self, cell_state: ElectricalState) -> np.ndarray:
-        return self.get_unscaled_ris(cell_state) * self.nlayers
+    def get_ris(
+        self,
+        soc: float | np.ndarray,
+        temperature: float | np.ndarray,
+    ) -> np.ndarray:
+        # one row = one RC pair; one col = one layer
+        return self.get_unscaled_ris(soc, temperature) * self.nlayers
 
-    def get_cis(self, cell_state: ElectricalState) -> np.ndarray:
-        return self.get_unscaled_cis(cell_state) / self.nlayers
-
-    def rescale(self, n_layers: int) -> BaseLUT:
-        copied = copy.deepcopy(self)
-        copied.nlayers = n_layers
-        return copied
-
-
-def check_nan(func):
-    def nan_checked(self, cell_state):
-        ret = func(self, cell_state)
-        try:
-            if any(np.isnan(ret)):
-                warnings.warn(
-                    f"{func.__name__} produced {ret} for cell_state\n{cell_state}"
-                )
-        except TypeError:
-            if np.isnan(ret):
-                warnings.warn(
-                    f"{func.__name__} produced {ret} for cell_state\n{cell_state}"
-                )
-        return ret
-
-    return nan_checked
+    def get_cis(
+        self,
+        soc: float | np.ndarray,
+        temperature: float | np.ndarray,
+    ) -> np.ndarray:
+        # one row = one RC pair; one col = one layer
+        return self.get_unscaled_cis(soc, temperature) / self.nlayers
 
 
-class HeatEquationMOL:
+class _HeatEquationMOL:
     """
     Method-of-lines discretisation of a 1d inhomogenous heat equation.
     Discretises in space, using finite differences on an equispaced
@@ -279,36 +113,43 @@ class HeatEquationMOL:
     def __init__(
         self,
         diffusivity: float,
-        convection_coeffs: list,
-        temperature_infinity: list,
+        heat_capacity: float,
+        line_density: float,
+        convection_coeffs: list[float] | np.ndarray,
+        temperature_infinity: list[float] | np.ndarray | Callable,
         domain_size: float = 1,
     ):
         if any([np.isinf(cc) for cc in convection_coeffs]):
             warnings.warn(
-                "Neumann BCs are not physically meaningful due to internal heat generation, even when modelling batteries under thermal control. Consider switching to Robin BCs with high convection rates, or expect the ODE solver to struggle or fail."
+                "Dirichlet BCs are not physically meaningful due to internal heat generation, even when modelling batteries under thermal control. Consider switching to Robin BCs with high convection rates, or expect the ODE solver to struggle or fail."
             )
         self._diffusivity = diffusivity
+        self._forcing_coeff = 1 / (line_density * heat_capacity)
         self._convection_coeffs = list([np.nan_to_num(cc) for cc in convection_coeffs])
-        self._temp_inf = temperature_infinity
+        try:
+            temperature_infinity(0)
+            self._temp_inf = temperature_infinity
+        except TypeError:
+            self._temp_inf = lambda t: temperature_infinity
         self.domain_size = domain_size
 
-    def get_dt_max(self, dx):
+    def get_dt_max(self, n_points):
+        dx = self.domain_size / (n_points - 1)
         return 0.5 * dx**2 / self._diffusivity
 
-    def _get_boundary_conds(self, lhs, rhs, dx):
+    def _get_boundary_conds(self, time, lhs, rhs, dx):
         """
         Construct fictitious mesh points to implement boudary
         conditions
         """
-        lhs_fictitious = lhs - dx * self._convection_coeffs[0] * (
-            lhs - self._temp_inf[0]
-        )
-        rhs_fictitious = rhs - dx * self._convection_coeffs[1] * (
-            rhs - self._temp_inf[1]
-        )
+        temp_inf = self._temp_inf(time)
+        lhs_fictitious = lhs - dx * self._convection_coeffs[0] * (lhs - temp_inf[0])
+        rhs_fictitious = rhs - dx * self._convection_coeffs[1] * (rhs - temp_inf[1])
         return lhs_fictitious, rhs_fictitious
 
-    def get_ode_rhs(self, state: np.ndarray, forcing: np.ndarray) -> np.ndarray:
+    def get_ode_rhs(
+        self, time: float, state: np.ndarray, forcing: np.ndarray
+    ) -> np.ndarray:
         """
         state captures temperature at any given point across the cell.
         This is driven by some forcing term. In this context, forcing
@@ -317,284 +158,265 @@ class HeatEquationMOL:
         """
         dx = self.domain_size / (state.size - 1)
         lhs_fictitious, rhs_fictitious = self._get_boundary_conds(
-            state[0], state[-1], dx
+            time, state[0], state[-1], dx
         )
         augmented_state = np.r_[lhs_fictitious, state, rhs_fictitious]
         forward_diffs = (
             augmented_state[:-2] + augmented_state[2:] - 2 * augmented_state[1:-1]
         )
-        return self._diffusivity * forward_diffs / (dx**2) + forcing
-
-
-class _UnitECM(abc.ABC):
-    def __init__(self, lookup_table: BaseLUT, capacity_Ah: float):
-        self.parameters = lookup_table
-        self._capacity = capacity_Ah * 3600
-
-    def get_odes(self, cell_state: ElectricalState) -> CellODE:
-        series_resistance = self.parameters.get_r0(cell_state)
-        rc_resistances = self.parameters.get_ris(cell_state)
-        rc_capacitances = self.parameters.get_cis(cell_state)
-        ocv = self.parameters.get_ocv(cell_state)
-        my_current = self._get_layer_current(
-            cell_state.terminal_voltage,
-            cell_state.layer_rc_voltages,
-            ocv,
-            series_resistance,
-        )
-        d_soc_dt = my_current / self._capacity
-        heat_gen = self._get_heat_gen(
-            cell_state, series_resistance, rc_resistances, my_current
-        )
-        d_layer_rc_voltages_dt = (
-            my_current - cell_state.layer_rc_voltages / rc_resistances
-        ) / rc_capacitances
-        return CellODE(d_soc_dt, d_layer_rc_voltages_dt, heat_gen, my_current)
-
-    def get_layer_current(self, cell_state: ElectricalState) -> float:
-        ocv = self.parameters.get_ocv(cell_state)
-        series_resistance = self.parameters.get_r0(cell_state)
-        return self._get_layer_current(
-            cell_state.terminal_voltage,
-            cell_state.layer_rc_voltages,
-            ocv,
-            series_resistance,
+        return (
+            self._diffusivity * forward_diffs / (dx**2)
+            + self._forcing_coeff * forcing
         )
 
-    def get_heat_gen(self, cell_state: ElectricalState) -> float:
-        series_resistance = self.parameters.get_r0(cell_state)
-        rc_resistances = self.parameters.get_ris(cell_state)
-        ocv = self.parameters.get_ocv(cell_state)
-        my_current = self._get_layer_current(
-            cell_state.terminal_voltage,
-            cell_state.layer_rc_voltages,
-            ocv,
-            series_resistance,
-        )
-        return self._get_heat_gen(
-            cell_state, series_resistance, rc_resistances, my_current
-        )
 
-    def _get_heat_gen(
-        self, cell_state: ElectricalState, r0: float, ris: np.ndarray, my_current: float
-    ) -> float:
-        entropy = self.parameters.get_entropy(cell_state)
-        reversible_heat = my_current * cell_state.layer_temperature * entropy
-        irreversible_heat = my_current**2 * (r0 + ris.sum())
-        return reversible_heat + irreversible_heat
+class ECM:
+    def __init__(self, parameters: BaseParameters):
+        self.parameters = parameters
+
+    def _get_parameters(self, layer_socs: np.ndarray, layer_temperatures: np.ndarray):
+        ocvs = self.parameters.get_ocv(layer_socs)
+        series_resistances = self.parameters.get_r0(layer_socs, layer_temperatures)
+        rc_resistances = self.parameters.get_ris(layer_socs, layer_temperatures)
+        rc_capacitances = self.parameters.get_cis(layer_socs, layer_temperatures)
+        entropies = self.parameters.get_entropy(layer_socs)
+        return ocvs, series_resistances, rc_resistances, rc_capacitances, entropies
 
     @staticmethod
-    def _get_layer_current(
+    def _get_layer_currents(
+        layer_rc_voltages: np.ndarray,  # One row = one RC pair; one col = one layer
         terminal_voltage: float,
-        rc_voltages: np.ndarray,
-        ocv: float,
-        series_resistance: float,
-    ) -> float:
-        working_voltage = terminal_voltage - ocv - rc_voltages.sum()
-        return working_voltage / series_resistance
+        ocvs: np.ndarray,
+        series_resistances: np.ndarray,
+    ) -> np.ndarray:
+        return (
+            terminal_voltage - ocvs - layer_rc_voltages.sum(axis=0)
+        ) / series_resistances
 
+    def _get_soc_odes(self, layer_currents: np.ndarray) -> np.ndarray:
+        return layer_currents / self.parameters.layer_capacity_As
 
-class ECMStack:
-    def __init__(
-        self,
-        ecm_params: BaseLUT,
-        heat_equation: HeatEquationMOL,
-        stacksize: int,
-        capacity_Ah: float,
-    ):
-        if stacksize < 2:
-            raise ValueError(
-                "Stacksize must be at least 2 for internal temperature gradient to make sense"
-            )
-        self._ecm = _UnitECM(ecm_params.rescale(stacksize), capacity_Ah / stacksize)
-        self._heat_equation = heat_equation
-        self._nstack = stacksize
-
-    @property
-    def size(self):
-        return self._nstack
-
-    def run(
-        self,
-        ts: np.ndarray,
-        currents: np.ndarray,
-        initial_rc_voltages: np.ndarray,
-        initial_socs: np.ndarray | float = 0,
-        initial_temps: np.ndarray | float = 0,
-        progress: bool = False,
-        **kwargs,
-    ) -> ECMResults:
-        if progress and not PROGRESSBAR:
-            warnings.warn(
-                "No progressbar2 module available, proceeding without progress bar."
-            )
-        elif progress:
-            bar = progressbar.ProgressBar(max_value=ts.size - 1)
-        else:
-            bar = None
-        results = ECMResults(ts.size, self._nstack)
-        socs = initial_socs * np.ones(self._nstack)
-        temps = initial_temps * np.ones(self._nstack)
-        if initial_rc_voltages.ndim == 1:
-            ones = np.ones((self._nstack, initial_rc_voltages.size))
-            initial_rc_voltages = initial_rc_voltages * ones
-        initial_cond = np.empty(initial_rc_voltages.size + 2 * self._nstack).reshape(
-            (self._nstack, -1)
-        )
-        for i in range(self._nstack):
-            initial_cond[i][0] = temps[i]
-            initial_cond[i][1] = socs[i]
-            initial_cond[i][2:] = initial_rc_voltages[i]
-        initial_cond = initial_cond.ravel()
-        self._append_state_to_results(ts[0], initial_cond, currents[0], results)
-        dt_max = (
-            None
-            if self._nstack == 1
-            else self._heat_equation.get_dt_max(1 / (self._nstack - 1))
-        )
-        for i, (t, dt, current) in enumerate(zip(ts, np.diff(ts), currents)):
-            try:
-                initial_cond, electrical_states = self._timestep(
-                    dt, current, initial_cond, dt_max, **kwargs
-                )
-                self._append_state_to_results(
-                    t, initial_cond, current, results, electrical_states
-                )
-            except ParameterException:
-                if bar is not None:
-                    bar.finish()
-                return results
-            if bar is not None:
-                bar.update(i)
-            if any(np.isnan(initial_cond)):
-                break
-        return results
-
-    def _append_state_to_results(
-        self,
-        t0: float,
-        statevec: np.ndarray,
-        current: float,
-        results: ECMResults,
-        electrical_states: list[ElectricalState] | None = None,
-    ) -> None:
-        temperatures, socs, rc_voltages = self._unpack_state(statevec, self._nstack)
-        if electrical_states is None:
-            electrical_states = self._get_electrical_states(statevec, current)
-
-        terminal_voltage = electrical_states[0].terminal_voltage
-        heatgen = np.fromiter(
-            (self._ecm.get_heat_gen(s) for s in electrical_states), float
-        )
-        total_heatgen = heatgen.sum()
-        entropies = np.fromiter(
-            (self._ecm.parameters.get_entropy(s) for s in electrical_states), float
-        )
-        layer_currents = np.fromiter(
-            (self._ecm.get_layer_current(s) for s in electrical_states), float
-        )
-        layer_socs = np.fromiter(
-            (self._ecm.parameters.get_ocv(s) for s in electrical_states), float
-        )
-
-        results.append_state(
-            t0,
-            socs.mean(),
-            current,
-            terminal_voltage,
-            total_heatgen,
-            entropies,
-            layer_currents,
-            socs,
-            temperatures,
-            heatgen,
-            layer_socs,
-            electrical_states,
-        )
-
-    def _timestep(
-        self,
-        timestep: float,
-        current: float,
-        initial_state: np.ndarray,
-        dt_max: float,
-        **kwargs,
-    ) -> tuple[np.ndarray, list[ElectricalState]]:
-        soln = scipy.integrate.solve_ivp(
-            self._ode_rhs,
-            [0, timestep],
-            initial_state,
-            args=(current,),
-            options={"max_step": dt_max},
-            **kwargs,
-        )
-        finalstate = soln.y[:, -1]
-        electrical_states = self._get_electrical_states(finalstate, current)
-        return finalstate, electrical_states
-
-    def _ode_rhs(self, t: float, x: np.ndarray, total_current: float) -> np.ndarray:
-        electrical_states = self._get_electrical_states(x, total_current)
-        layer_odes = [self._ecm.get_odes(state) for state in electrical_states]
-        heatstate = np.fromiter(
-            (layer.layer_temperature for layer in electrical_states), float
-        )
-        heatgen = np.fromiter((layer.layer_heatgen for layer in layer_odes), float)
-        heatgen_density = self._heat_equation.domain_size * heatgen * self._nstack
-        heat_equation_rhs = self._heat_equation.get_ode_rhs(heatstate, heatgen_density)
-        ode_rhs = np.empty_like(x).reshape((self._nstack, -1))
-        for i in range(self._nstack):
-            ode_rhs[i][0] = heat_equation_rhs[i]
-            ode_rhs[i][1] = layer_odes[i].d_soc_dt
-            ode_rhs[i][2:] = layer_odes[i].d_rcvoltages_dt
-        ret = ode_rhs.ravel()
-        if any(np.isnan(ret)):
-            raise ParameterException
+    @staticmethod
+    def _get_rc_odes(
+        layer_currents: np.ndarray,
+        layer_rc_voltages: np.ndarray,  # one row = one RC pair; one col = one layer
+        rc_resistances: np.ndarray,  # One row = one RC pair; one col = one layer
+        rc_capacitances: np.ndarray,  # one row = one RC pair; one col = one layer
+    ) -> np.ndarray:
+        ret = np.zeros_like(layer_rc_voltages)
+        for i, (voltages, resistances, capacitances) in enumerate(
+            zip(layer_rc_voltages, rc_resistances, rc_capacitances)
+        ):
+            ret[i] = (layer_currents - voltages / resistances) / capacitances
         return ret
 
-    def _get_electrical_states(
-        self, ode_state: np.ndarray, total_current: float
-    ) -> list[ElectricalState]:
-        layer_temperatures, layer_socs, layer_rc_voltages = self._unpack_state(
-            ode_state, self._nstack
+    @staticmethod
+    def _get_heat_gen(
+        layer_socs: np.ndarray,
+        layer_currents: np.ndarray,
+        layer_temperatures: np.ndarray,
+        series_resistances: np.ndarray,
+        rc_resistances: np.ndarray,
+        entropies: np.ndarray,
+    ) -> np.ndarray:
+        reversible_heat = layer_currents * layer_temperatures * entropies
+        irreversible_heat = layer_currents**2 * (
+            series_resistances + rc_resistances.sum(axis=0)
         )
-        ocvs = np.empty(self._nstack)
-        series_resistances = np.empty(self._nstack)
-        for i in range(self._nstack):
-            layer_i_dummystate = ElectricalState(
-                None, layer_temperatures[i], layer_socs[i], layer_rc_voltages[i]
-            )
-            ocvs[i] = self._ecm.parameters.get_ocv(layer_i_dummystate)
-            series_resistances[i] = self._ecm.parameters.get_r0(layer_i_dummystate)
-        output_voltage = self._get_output_voltage(
-            total_current, layer_rc_voltages, ocvs, series_resistances
+        return reversible_heat + irreversible_heat
+
+    def _ode_rhs(
+        self,
+        t: float,
+        x: np.ndarray,
+        currentfunc: Callable,
+        heat_equation: _HeatEquationMOL,
+    ) -> np.ndarray:
+        total_current = currentfunc(t)
+        if total_current is None:
+            raise ParameterException
+
+        temperatures, socs, rc_voltages = self._unpack_state(x, self.parameters.nlayers)
+        (
+            ocvs,
+            series_resistances,
+            rc_resistances,
+            rc_capacitances,
+            entropies,
+        ) = self._get_parameters(socs, temperatures)
+
+        terminal_voltage = self._get_output_voltage(
+            total_current, rc_voltages, ocvs, series_resistances
         )
-        return [
-            ElectricalState(output_voltage, temp, soc, rcvs)
-            for temp, soc, rcvs in zip(
-                layer_temperatures, layer_socs, layer_rc_voltages
-            )
-        ]
+        layer_currents = self._get_layer_currents(
+            rc_voltages, terminal_voltage, ocvs, series_resistances
+        )
+
+        heat_gen = self._get_heat_gen(
+            socs,
+            layer_currents,
+            temperatures,
+            series_resistances,
+            rc_resistances,
+            entropies,
+        )
+        forcing = heat_gen * self.parameters.nlayers / self.parameters.thickness
+        d_temperature_dt = heat_equation.get_ode_rhs(t, temperatures, forcing)
+        d_soc_dt = self._get_soc_odes(layer_currents)
+        d_rc_dt = self._get_rc_odes(
+            layer_currents, rc_voltages, rc_resistances, rc_capacitances
+        )
+
+        ode_rhs = np.empty_like(x).reshape((-1, self.parameters.nlayers))
+        ode_rhs[0] = d_temperature_dt
+        ode_rhs[1] = d_soc_dt
+        ode_rhs[2:] = d_rc_dt
+
+        if any(np.isnan(ode_rhs.ravel())):
+            raise ParameterException
+
+        return ode_rhs.ravel()
 
     @staticmethod
     def _unpack_state(state, n_ecms):
-        # state = [temperature, soc, rc vals] * n_ecms
-        unit_ecm_states = state.reshape((n_ecms, -1))
-        temperatures = unit_ecm_states[:, 0]
-        socs = unit_ecm_states[:, 1]
-        rc_voltages = unit_ecm_states[:, 2:]
+        # state = col vectors of [temperature, soc, rc vals] for each layer
+        unit_ecm_states = state.reshape((-1, n_ecms))
+        temperatures = unit_ecm_states[0]
+        socs = unit_ecm_states[1]
+        rc_voltages = unit_ecm_states[2:]
         return temperatures, socs, rc_voltages
 
     @staticmethod
     def _get_output_voltage(
         total_current: float,
-        layer_rc_voltages: np.ndarray,
+        layer_rc_voltages: np.ndarray,  # one row = one RC pair; one col = one layer
         layer_ocvs: np.ndarray,
         layer_series_resistances: np.ndarray,
     ) -> float:
-        # layer_rc_voltages : np array where row i is vector of rc overpotentials for ECM i; taken from ODE state
         rc_contribution = (
-            layer_rc_voltages.sum(axis=1) / layer_series_resistances
+            layer_rc_voltages.sum(axis=0) / layer_series_resistances
         ).sum()
         ocv_contribution = (layer_ocvs / layer_series_resistances).sum()
         series_conductance = (1 / layer_series_resistances).sum()
         return (ocv_contribution + rc_contribution + total_current) / series_conductance
+
+    def _postprocess(
+        self, ts: list[float], states: list[np.ndarray], currentfunc: Callable
+    ):
+        n_rcs = int(states[0].size / self.parameters.nlayers) - 2
+        terminal_voltages = np.zeros(len(ts))
+        layer_currents = np.zeros((self.parameters.nlayers, len(ts)))
+        layer_temps = np.zeros((self.parameters.nlayers, len(ts)))
+        layer_heatgen = np.zeros((self.parameters.nlayers, len(ts)))
+        layer_socs = np.zeros((self.parameters.nlayers, len(ts)))
+        layer_rcs = np.zeros((self.parameters.nlayers, len(ts), n_rcs))
+
+        for i, (t, state) in enumerate(zip(ts, states)):
+            # TODO avoid repetition with ODEs
+            total_current = currentfunc(t)
+            temperatures, socs, rc_voltages = self._unpack_state(
+                state, self.parameters.nlayers
+            )
+            (
+                ocvs,
+                series_resistances,
+                rc_resistances,
+                rc_capacitances,
+                entropies,
+            ) = self._get_parameters(socs, temperatures)
+
+            terminal_voltage = self._get_output_voltage(
+                total_current, rc_voltages, ocvs, series_resistances
+            )
+            currents = self._get_layer_currents(
+                rc_voltages, terminal_voltage, ocvs, series_resistances
+            )
+
+            heat_gen = self._get_heat_gen(
+                socs,
+                currents,
+                temperatures,
+                series_resistances,
+                rc_resistances,
+                entropies,
+            )
+
+            terminal_voltages[i] = terminal_voltage
+            layer_currents[:, i] = currents
+            layer_temps[:, i] = temperatures
+            layer_socs[:, i] = socs
+            layer_heatgen[:, i] = heat_gen
+            layer_rcs[:, i, :] = rc_voltages.T
+        return (
+            np.array(ts),
+            terminal_voltages,
+            layer_currents,
+            layer_temps,
+            layer_socs,
+            layer_heatgen,
+            layer_rcs,
+        )
+
+    def run(
+        self,
+        currentdraw: Callable | float,
+        convection_coeffs: list[float] | np.ndarray,
+        temp_inf: list | np.ndarray | Callable,
+        initial_rc_voltages: np.ndarray,
+        initial_socs: float | np.ndarray = 0,
+        initial_temps: float | np.ndarray = 25,
+        solver=scipy.integrate.BDF,
+        **kwargs,
+    ):
+        # Build initial condition
+        socs = initial_socs * np.ones(self.parameters.nlayers)
+        temps = initial_temps * np.ones(self.parameters.nlayers)
+        if initial_rc_voltages.ndim == 1:
+            ones = np.ones((initial_rc_voltages.size, self.parameters.nlayers))
+            initial_rc_voltages = initial_rc_voltages.reshape((-1, 1)) * ones
+        initial_cond = np.empty(
+            initial_rc_voltages.size + 2 * self.parameters.nlayers
+        ).reshape((-1, self.parameters.nlayers))
+        initial_cond[0] = temps
+        initial_cond[1] = socs
+        initial_cond[2:] = initial_rc_voltages
+        initial_cond = initial_cond.ravel()
+
+        # Build MOL heat equation
+        heat_equation = _HeatEquationMOL(
+            self.parameters.diffusivity,
+            self.parameters.heat_capacity,
+            self.parameters.line_density,
+            convection_coeffs,
+            temp_inf,
+            self.parameters.thickness,
+        )
+        dt_max = (
+            np.inf
+            if self.parameters.nlayers == 1
+            else 0.9 * heat_equation.get_dt_max(self.parameters.nlayers)
+        )
+
+        try:
+            currentdraw(0)
+            currentfunc = currentdraw
+        except TypeError:
+            currentfunc = lambda x: currentdraw
+
+        ts, states = [], []
+        solverinstance = solver(
+            lambda t, x: self._ode_rhs(t, x, currentfunc, heat_equation),
+            0,
+            initial_cond,
+            np.inf,
+            options={"max_step": dt_max},
+            **kwargs,
+        )
+        while solverinstance.status == "running":
+            ts.append(solverinstance.t)
+            states.append(solverinstance.y)
+            try:
+                solverinstance.step()
+            except ParameterException:
+                break
+        return self._postprocess(ts, states, currentfunc)
