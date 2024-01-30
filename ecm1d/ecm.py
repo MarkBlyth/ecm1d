@@ -1,9 +1,16 @@
 from __future__ import annotations
 from typing import Callable
 import abc
-import numpy as np
 import warnings
+import collections
+import numpy as np
 import scipy.integrate
+
+
+Solution = collections.namedtuple(
+    "Solution",
+    ["t", "v", "currents", "temperatures", "socs", "heatgens", "rc_voltages"],
+)
 
 
 class ParameterException(Exception):
@@ -347,7 +354,7 @@ class ECM:
             layer_socs[:, i] = socs
             layer_heatgen[:, i] = heat_gen
             layer_rcs[:, i, :] = rc_voltages.T
-        return (
+        return Solution(
             np.array(ts),
             terminal_voltages,
             layer_currents,
@@ -404,19 +411,21 @@ class ECM:
             currentfunc = lambda x: currentdraw
 
         ts, states = [], []
-        solverinstance = solver(
-            lambda t, x: self._ode_rhs(t, x, currentfunc, heat_equation),
-            0,
-            initial_cond,
-            np.inf,
-            options={"max_step": dt_max},
-            **kwargs,
-        )
-        while solverinstance.status == "running":
-            ts.append(solverinstance.t)
-            states.append(solverinstance.y)
-            try:
+        try:
+            solverinstance = solver(
+                lambda t, x: self._ode_rhs(t, x, currentfunc, heat_equation),
+                0,
+                initial_cond,
+                np.inf,
+                options={"max_step": dt_max},
+                **kwargs,
+            )
+            while solverinstance.status == "running":
+                ts.append(solverinstance.t)
+                states.append(solverinstance.y)
                 solverinstance.step()
-            except ParameterException:
-                break
+        except ParameterException:
+            pass
+        if len(ts) == 0:
+            return None
         return self._postprocess(ts, states, currentfunc)
