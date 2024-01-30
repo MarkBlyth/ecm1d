@@ -219,17 +219,18 @@ class ECM:
 
     @staticmethod
     def _get_heat_gen(
-        layer_socs: np.ndarray,
         layer_currents: np.ndarray,
         layer_temperatures: np.ndarray,
         series_resistances: np.ndarray,
         rc_resistances: np.ndarray,
+        rc_voltages: np.ndarray,
         entropies: np.ndarray,
     ) -> np.ndarray:
         reversible_heat = layer_currents * layer_temperatures * entropies
-        irreversible_heat = layer_currents**2 * (
-            series_resistances + rc_resistances.sum(axis=0)
-        )
+        # current**2 * R0 + v_RC **2 / R_RC
+        irreversible_heat = layer_currents**2 * series_resistances + (
+            rc_voltages**2 / rc_resistances
+        ).sum(axis=0)
         return reversible_heat + irreversible_heat
 
     def _ode_rhs(
@@ -260,11 +261,11 @@ class ECM:
         )
 
         heat_gen = self._get_heat_gen(
-            socs,
             layer_currents,
             temperatures,
             series_resistances,
             rc_resistances,
+            rc_voltages,
             entropies,
         )
         forcing = heat_gen * self.parameters.nlayers / self.parameters.thickness
@@ -340,11 +341,11 @@ class ECM:
             )
 
             heat_gen = self._get_heat_gen(
-                socs,
                 currents,
                 temperatures,
                 series_resistances,
                 rc_resistances,
+                rc_voltages,
                 entropies,
             )
 
