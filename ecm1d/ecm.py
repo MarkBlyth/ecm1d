@@ -226,9 +226,9 @@ class ECM:
         rc_voltages: np.ndarray,
         entropies: np.ndarray,
     ) -> np.ndarray:
-        reversible_heat = layer_currents * layer_temperatures * entropies
+        reversible_heat = -layer_currents * layer_temperatures * entropies
         # current**2 * R0 + v_RC **2 / R_RC
-        irreversible_heat = -layer_currents**2 * series_resistances + (
+        irreversible_heat = layer_currents**2 * series_resistances + (
             rc_voltages**2 / rc_resistances
         ).sum(axis=0)
         return reversible_heat + irreversible_heat
