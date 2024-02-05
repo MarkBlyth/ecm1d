@@ -26,7 +26,7 @@ class BaseParameters(abc.ABC):
 
     def __init__(
         self,
-        nlayers,
+        nlayers: int,
         diffusivity: float,
         heat_capacity: float,
         line_density: float,
