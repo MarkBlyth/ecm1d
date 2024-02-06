@@ -177,7 +177,7 @@ class _HeatEquationMOL:
         )
 
 
-class ECM:
+class _BaseECM(abc.ABC):
     def __init__(self, parameters: BaseParameters):
         self.parameters = parameters
 
@@ -189,6 +189,56 @@ class ECM:
         entropies = self.parameters.get_entropy(layer_socs)
         return ocvs, series_resistances, rc_resistances, rc_capacitances, entropies
 
+    @abc.abstractmethod
+    def run(
+        self,
+        currentdraw: Callable | float,
+        convection_coeffs: list[float] | np.ndarray,
+        temp_inf: list[float] | np.ndarray | Callable,
+        initial_rc_voltages: np.ndarray,
+        initial_soc: float | np.ndarray,
+        initial_temp: float | np.ndarray,
+        solver=scipy.integrate.BDF,
+        **kwargs,
+    ):
+        pass
+
+    @staticmethod
+    def _integrator(
+        solver: Callable,
+        dt_max: float,
+        initial_cond: np.ndarray,
+        ode_func: Callable,
+        **kwargs,
+    ):
+        """
+        ODE solver must stop when a ParameterException is raised, so
+        the standard scipy.integrate routines can't be used. Instead,
+        use the lower level API, whereby a scipy integrator is passed
+        ('solver' arg), and stepped manually.
+        """
+        ts, states = [], []
+        try:
+            solverinstance = solver(
+                ode_func,
+                0,
+                initial_cond,
+                np.inf,
+                options={"max_step": dt_max},
+                **kwargs,
+            )
+            while solverinstance.status == "running":
+                ts.append(solverinstance.t)
+                states.append(solverinstance.y)
+                solverinstance.step()
+        except ParameterException:
+            pass
+        if len(ts) == 0:
+            return None, None
+        return ts, states
+
+
+class ECM(_BaseECM):
     @staticmethod
     def _get_layer_currents(
         layer_rc_voltages: np.ndarray,  # One row = one RC pair; one col = one layer
@@ -371,14 +421,14 @@ class ECM:
         convection_coeffs: list[float] | np.ndarray,
         temp_inf: list | np.ndarray | Callable,
         initial_rc_voltages: np.ndarray,
-        initial_socs: float | np.ndarray = 0,
-        initial_temps: float | np.ndarray = 25,
+        initial_soc: float | np.ndarray = 0,
+        initial_temp: float | np.ndarray = 25,
         solver=scipy.integrate.BDF,
         **kwargs,
     ):
         # Build initial condition
-        socs = initial_socs * np.ones(self.parameters.nlayers)
-        temps = initial_temps * np.ones(self.parameters.nlayers)
+        socs = initial_soc * np.ones(self.parameters.nlayers)
+        temps = initial_temp * np.ones(self.parameters.nlayers)
         if initial_rc_voltages.ndim == 1:
             ones = np.ones((initial_rc_voltages.size, self.parameters.nlayers))
             initial_rc_voltages = initial_rc_voltages.reshape((-1, 1)) * ones
@@ -411,22 +461,13 @@ class ECM:
         except TypeError:
             currentfunc = lambda x: currentdraw
 
-        ts, states = [], []
-        try:
-            solverinstance = solver(
-                lambda t, x: self._ode_rhs(t, x, currentfunc, heat_equation),
-                0,
-                initial_cond,
-                np.inf,
-                options={"max_step": dt_max},
-                **kwargs,
-            )
-            while solverinstance.status == "running":
-                ts.append(solverinstance.t)
-                states.append(solverinstance.y)
-                solverinstance.step()
-        except ParameterException:
-            pass
-        if len(ts) == 0:
+        ts, states = self._integrator(
+            solver,
+            dt_max,
+            initial_cond,
+            lambda t, x: self._ode_rhs(t, x, currentfunc, heat_equation),
+            **kwargs,
+        )
+        if ts is None:
             return None
         return self._postprocess(ts, states, currentfunc)
