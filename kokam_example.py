@@ -11,19 +11,6 @@ import ecm1d
 Thermal data from https://www.sciencedirect.com/science/article/pii/S1359431122005233?via%3Dihub
 """
 
-# TODO work out what thermal coeffs to use.
-# Currently, it's D * area
-
-"""
-TODO get validating!
-
-Run inhomogeneity paper procedures, compare to data and PyECN
-Run on Kokam Validation procedure
-Try on Jasper's LG M50 parameters
-[Try new Kokam parameters]
-"""
-# 
-
 
 def currentdraw(ts: float | np.ndarray) -> float | np.ndarray:
     if ts == 0:
