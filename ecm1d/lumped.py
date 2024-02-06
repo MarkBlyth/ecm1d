@@ -16,7 +16,7 @@ class HomogenousECM(ecm._BaseECM):
         thermal_coeff: float,
         current_func: Callable,
         convection: float | list | np.ndarray,
-        temp_inf: float | list | np.ndarray,
+        temp_inf: Callable,
     ) -> np.ndarray:
         temperature = x[0]
         soc = x[1]
@@ -37,7 +37,7 @@ class HomogenousECM(ecm._BaseECM):
             rc_voltages,
             entropy,
         )
-        cooling = self._get_cooling_rate(temperature, convection, temp_inf)
+        cooling = self._get_cooling_rate(temperature, convection, temp_inf(t))
         d_temperature_dt = heat_gen * thermal_coeff + cooling
         d_soc_dt = current / (self.parameters.capacity_Ah * 3600)
         d_rcvoltages_dt = (current * rc_resistances.squeeze() - rc_voltages) / (
@@ -65,7 +65,13 @@ class HomogenousECM(ecm._BaseECM):
         return reversible_heat + irreversible_heat
 
     @staticmethod
-    def _get_cooling_rate(temperature, convection_coeffs, temp_inf) -> float:
+    def _get_cooling_rate(
+        temperature: float | np.ndarray,
+        convection_coeffs: float | list[float] | np.ndarray,
+        temp_inf: list[float] | np.ndarray,
+    ) -> float | np.ndarray:
+        # Either convection coeffs and temp_inf are scalar, or both
+        # are lists / ndarrays TODO enforce checking of this somewhere
         try:
             lhs_loss = convection_coeffs[0] * (temp_inf[0] - temperature)
             rhs_loss = convection_coeffs[1] * (temp_inf[1] - temperature)
@@ -77,7 +83,7 @@ class HomogenousECM(ecm._BaseECM):
         self,
         currentdraw: Callable | float,
         convection_coeffs: float | list[float] | np.ndarray,
-        temp_inf: float | list[float] | np.ndarray,
+        temp_inf: float | list[float] | np.ndarray | Callable,
         initial_rc_voltages: np.ndarray,
         initial_soc: float | np.ndarray = 0,
         initial_temp: float | np.ndarray = 25,
@@ -96,12 +102,18 @@ class HomogenousECM(ecm._BaseECM):
         except TypeError:
             currentfunc = lambda x: currentdraw
 
+        try:
+            temp_inf(0)
+            tempfunc = temp_inf
+        except TypeError:
+            tempfunc = lambda t: temp_inf
+
         ts, states = self._integrator(
             solver,
             np.inf,
             initial_cond,
             lambda t, x: self._ode_rhs(
-                t, x, thermal_coeff, currentfunc, convection_coeffs, temp_inf
+                t, x, thermal_coeff, currentfunc, convection_coeffs, tempfunc,
             ),
             **kwargs,
         )
