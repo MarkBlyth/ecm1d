@@ -1,3 +1,4 @@
 from .kokamlut import KokamParameters
-from .ecm import ECM
+from .ideallut import IdealisedParameters
+from .ecm import ECM, BaseParameters
 from .lumped import HomogenousECM
