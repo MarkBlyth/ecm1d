@@ -22,6 +22,8 @@ class HomogenousECM(ecm._BaseECM):
         soc = x[1]
         rc_voltages = x[2:]
         current = current_func(t)
+        if current is None:
+            raise ecm.ParameterException
         (
             _,
             series_resistance,
@@ -108,9 +110,13 @@ class HomogenousECM(ecm._BaseECM):
         except TypeError:
             tempfunc = lambda t: temp_inf
 
+        if "step_max" in kwargs:
+            step_max = kwargs.pop("step_max")
+        else:
+            step_max = np.inf
         ts, states = self._integrator(
             solver,
-            np.inf,
+            step_max,
             initial_cond,
             lambda t, x: self._ode_rhs(
                 t, x, thermal_coeff, currentfunc, convection_coeffs, tempfunc,
