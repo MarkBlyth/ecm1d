@@ -140,7 +140,7 @@ class _HeatEquationMOL:
             self._temp_inf = lambda t: temperature_infinity
         self.domain_size = domain_size
 
-    def get_dt_max(self, n_points):
+    def get_step_max(self, n_points):
         dx = self.domain_size / (n_points - 1)
         return 0.5 * dx**2 / self._diffusivity
 
@@ -206,7 +206,7 @@ class _BaseECM(abc.ABC):
     @staticmethod
     def _integrator(
         solver: Callable,
-        dt_max: float,
+        step_max: float,
         initial_cond: np.ndarray,
         ode_func: Callable,
         **kwargs,
@@ -224,7 +224,8 @@ class _BaseECM(abc.ABC):
                 0,
                 initial_cond,
                 np.inf,
-                options={"max_step": dt_max},
+                max_step=step_max,
+                #options={"max_step": step_max},
                 **kwargs,
             )
             while solverinstance.status == "running":
@@ -424,6 +425,7 @@ class ECM(_BaseECM):
         initial_soc: float | np.ndarray = 0,
         initial_temp: float | np.ndarray = 25,
         solver=scipy.integrate.BDF,
+        step_max=None,
         **kwargs,
     ):
         # Build initial condition
@@ -449,11 +451,12 @@ class ECM(_BaseECM):
             temp_inf,
             self.parameters.thickness,
         )
-        dt_max = (
-            np.inf
-            if self.parameters.nlayers == 1
-            else 0.9 * heat_equation.get_dt_max(self.parameters.nlayers)
-        )
+        if step_max is None:
+            step_max = (
+                np.inf
+                if self.parameters.nlayers == 1
+                else 0.9 * heat_equation.get_step_max(self.parameters.nlayers)
+            )
 
         try:
             currentdraw(0)
@@ -463,7 +466,7 @@ class ECM(_BaseECM):
 
         ts, states = self._integrator(
             solver,
-            dt_max,
+            step_max,
             initial_cond,
             lambda t, x: self._ode_rhs(t, x, currentfunc, heat_equation),
             **kwargs,
