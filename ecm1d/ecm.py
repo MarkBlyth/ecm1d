@@ -88,7 +88,10 @@ class BaseParameters(abc.ABC):
         temperature: float | np.ndarray,
     ) -> np.ndarray:
         # one row = one RC pair; one col = one layer
-        return self.get_unscaled_ris(soc, temperature) * self.nlayers
+        ris = self.get_unscaled_ris(soc, temperature)
+        if ris is None:
+            return None
+        return ris * self.nlayers
 
     def get_cis(
         self,
@@ -96,7 +99,10 @@ class BaseParameters(abc.ABC):
         temperature: float | np.ndarray,
     ) -> np.ndarray:
         # one row = one RC pair; one col = one layer
-        return self.get_unscaled_cis(soc, temperature) / self.nlayers
+        cis = self.get_unscaled_cis(soc, temperature)
+        if cis is None:
+            return None
+        return cis / self.nlayers
 
 
 class _HeatEquationMOL:
@@ -247,8 +253,12 @@ class ECM(_BaseECM):
         ocvs: np.ndarray,
         series_resistances: np.ndarray,
     ) -> np.ndarray:
+        if layer_rc_voltages is None:
+            rc_voltages = 0
+        else:
+            rc_voltages = layer_rc_voltages.sum(axis=0)
         return (
-            terminal_voltage - ocvs - layer_rc_voltages.sum(axis=0)
+            terminal_voltage - ocvs - rc_voltages
         ) / series_resistances
 
     def _get_soc_odes(self, layer_currents: np.ndarray) -> np.ndarray:
@@ -262,6 +272,8 @@ class ECM(_BaseECM):
         rc_capacitances: np.ndarray,  # one row = one RC pair; one col = one layer
     ) -> np.ndarray:
         ret = np.zeros_like(layer_rc_voltages)
+        if rc_resistances is None or rc_capacitances is None:
+            return ret
         for i, (voltages, resistances, capacitances) in enumerate(
             zip(layer_rc_voltages, rc_resistances, rc_capacitances)
         ):
@@ -277,11 +289,14 @@ class ECM(_BaseECM):
         rc_voltages: np.ndarray,
         entropies: np.ndarray,
     ) -> np.ndarray:
+        if rc_voltages is None:
+            irreversible_heat = layer_currents**2 * series_resistances
+        else:
+            # current**2 * R0 + v_RC **2 / R_RC
+            irreversible_heat = layer_currents**2 * series_resistances + (
+                rc_voltages**2 / rc_resistances
+            ).sum(axis=0) 
         reversible_heat = -layer_currents * layer_temperatures * entropies
-        # current**2 * R0 + v_RC **2 / R_RC
-        irreversible_heat = layer_currents**2 * series_resistances + (
-            rc_voltages**2 / rc_resistances
-        ).sum(axis=0)
         return reversible_heat + irreversible_heat
 
     def _ode_rhs(
@@ -322,14 +337,16 @@ class ECM(_BaseECM):
         forcing = heat_gen * self.parameters.nlayers / self.parameters.thickness
         d_temperature_dt = heat_equation.get_ode_rhs(t, temperatures, forcing)
         d_soc_dt = self._get_soc_odes(layer_currents)
-        d_rc_dt = self._get_rc_odes(
-            layer_currents, rc_voltages, rc_resistances, rc_capacitances
-        )
 
         ode_rhs = np.empty_like(x).reshape((-1, self.parameters.nlayers))
         ode_rhs[0] = d_temperature_dt
         ode_rhs[1] = d_soc_dt
-        ode_rhs[2:] = d_rc_dt
+
+        if rc_voltages is not None:
+            d_rc_dt = self._get_rc_odes(
+                layer_currents, rc_voltages, rc_resistances, rc_capacitances
+            )
+            ode_rhs[2:] = d_rc_dt
 
         if any(np.isnan(ode_rhs.ravel())):
             raise ParameterException
@@ -342,7 +359,10 @@ class ECM(_BaseECM):
         unit_ecm_states = state.reshape((-1, n_ecms))
         temperatures = unit_ecm_states[0]
         socs = unit_ecm_states[1]
-        rc_voltages = unit_ecm_states[2:]
+        if unit_ecm_states.shape[0] == 2:
+            rc_voltages = None
+        else:
+            rc_voltages = unit_ecm_states[2:]
         return temperatures, socs, rc_voltages
 
     @staticmethod
@@ -352,9 +372,12 @@ class ECM(_BaseECM):
         layer_ocvs: np.ndarray,
         layer_series_resistances: np.ndarray,
     ) -> float:
-        rc_contribution = (
-            layer_rc_voltages.sum(axis=0) / layer_series_resistances
-        ).sum()
+        if layer_rc_voltages is None:
+            rc_contribution = 0
+        else:
+            rc_contribution = (
+                layer_rc_voltages.sum(axis=0) / layer_series_resistances
+            ).sum()
         ocv_contribution = (layer_ocvs / layer_series_resistances).sum()
         series_conductance = (1 / layer_series_resistances).sum()
         return (ocv_contribution + rc_contribution + total_current) / series_conductance
@@ -405,7 +428,8 @@ class ECM(_BaseECM):
             layer_temps[:, i] = temperatures
             layer_socs[:, i] = socs
             layer_heatgen[:, i] = heat_gen
-            layer_rcs[:, i, :] = rc_voltages.T
+            if n_rcs != 0:
+                layer_rcs[:, i, :] = rc_voltages.T
         return Solution(
             np.array(ts),
             terminal_voltages,
