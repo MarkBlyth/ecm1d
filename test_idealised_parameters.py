@@ -27,6 +27,9 @@ def main():
     surf = ax.plot_surface(
         xs, ys, r0s, cmap="coolwarm", linewidth=0, antialiased=False
     )
+    ax.set_xlabel("SOC")
+    ax.set_ylabel("Temperature [degC]")
+    ax.set_zlabel("Synthetic R0 [Ohm]")
     plt.show()
 
     external_temperature = 10.1
@@ -35,46 +38,32 @@ def main():
         currentdraw,
         [0, convection_rate],
         [external_temperature, external_temperature],
-        np.array([0]),
+        np.array([]),
         0.99,
         external_temperature,
     )
 
-    _, [(ax, ax2, ax3), (ax4, ax5, ax6)] = plt.subplots(2, 3)
-
-    ax.plot(soln.t, soln.v)
-    ax.set_xlabel("Time [s]")
-    ax.set_ylabel("Terminal voltage [V]")
-
-    final_tempdist = soln.temperatures[:, -1]
-    ax2.plot(np.linspace(0, 1, final_tempdist.size), final_tempdist)
-    ax2.set_xlabel("Nondimensional position")
-    ax2.set_ylabel("Temperature [degC]")
+    _, ax = plt.subplots(2,2, figsize=(12, 5))
+    ax[0][0].plot(soln.t, soln.v)
+    ax[0][0].set_xlabel("Time [s]")
+    ax[0][0].set_ylabel("Terminal voltage [V]")
 
     for current in soln.currents:
-        ax3.plot(soln.t[1:], np.abs(current[1:]))
-    ax3.set_xlabel("Time [s]")
-    ax3.set_ylabel("Absolute layer currents [A]")
+        ax[0][1].plot(soln.t[1:], np.abs(current[1:]))
+    ax[0][1].set_xlabel("Time [s]")
+    ax[0][1].set_ylabel("Absolute layer currents [A]")
 
-    for heatgen in soln.heatgens:
-        ax4.plot(soln.t, heatgen)
-    ax4.set_xlabel("Time [s]")
-    ax4.set_ylabel("Layer heat generation [W]")
+    mean_socs = soln.socs.mean(axis=0)
+    for soc in soln.socs:
+        ax[1][0].plot(soln.t, soc - mean_socs)
+    ax[1][0].set_xlabel("Time [s]")
+    ax[1][0].set_ylabel("Layer SOC - overall cell SOC")
 
-    for temp in soln.temperatures:
-        ax5.plot(soln.t, temp)
-    ax5.set_xlabel("Time [s]")
-    ax5.set_ylabel("Layer temperature [oC]")
-
-    ax6.plot(
-        soln.t,
-        convection_rate
-        * (soln.temperatures[-1] - external_temperature)
-        * 0.0425
-        * 0.142,
-    )
-    ax6.set_xlabel("Time [s]")
-    ax6.set_ylabel("Convective heat loss [W]")
+    homo_ocv = parameters.get_ocv(soln.socs.mean(axis=0))
+    for soc in soln.socs:
+        ax[1][1].plot(soln.t, parameters.get_ocv(soc) - homo_ocv)
+    ax[1][1].set_xlabel("Time [s]")
+    ax[1][1].set_ylabel("Layer OCV - homogeneous cell's OCV [V]")
 
     plt.show()
 
